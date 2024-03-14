@@ -221,14 +221,97 @@ abstract contract Ownable is Context {
     }
 }
 
-contract LolApe is ERC20, Ownable {
+abstract contract Feeable is Context {
+    event FeeRecipientChanged(address account); 
+    event FeePointsOnBuyChanged(uint newFeePoints); 
+    event FeePointsOnSellChanged(uint newFeePoints); 
+    event ExemptFee(address account);
+    event RevokeFeeExemption(address account);
+
+    uint private _maxFeePointsAllowed; 
+    uint private _feePointsOnBuy; 
+    uint private _feePointsOnSell; 
+    address private _feeRecipient;
+    mapping (address => bool) private _feeExemption;
+
+    constructor(uint __maxFeePointsAllowed, uint __feePointsOnBuy, uint __feePointsOnSell, address __feeRecipient) {
+        require(__feeRecipient != address(0), "Fee receiver cannot be the zero address");
+        require(__feePointsOnBuy <= __maxFeePointsAllowed, "Exceed max allowed fee points");
+        require(__feePointsOnSell <= __maxFeePointsAllowed, "Exceed max allowed fee points");
+
+        _maxFeePointsAllowed = __maxFeePointsAllowed;
+        _feePointsOnBuy = __feePointsOnBuy; 
+        _feePointsOnSell = __feePointsOnSell; 
+        _feeRecipient = __feeRecipient; 
+    }
+
+    function maxFeePointsAllowed() public view virtual returns (uint) {
+        return _maxFeePointsAllowed;
+    }
+
+    function feePointsOnBuy() public view virtual returns (uint) {
+        return _feePointsOnBuy;
+    }
+
+    function feePointsOnSell() public view virtual returns (uint) {
+        return _feePointsOnSell;
+    }
+
+    function feeRecipient() public view virtual returns (address) {
+        return _feeRecipient;
+    }
+
+    function isFeeExempted(address account) public view virtual returns (bool) { 
+        return _feeExemption[account];
+    }
+
+    function _updateFeeRecipient(address newRecipient) internal virtual {
+        require(newRecipient != address(0), "Fee receiver cannot be the zero address");
+        _feeRecipient = newRecipient;
+        emit FeeRecipientChanged(_msgSender());
+    }
+
+    function _updateFeePointsOnBuy(uint newFeePointsOnBuy) internal virtual {
+        require(newFeePointsOnBuy <= _maxFeePointsAllowed, "Exceed max allowed fee points");
+        _feePointsOnBuy = newFeePointsOnBuy;
+        emit FeePointsOnBuyChanged(newFeePointsOnBuy);
+    }
+
+    function _updateFeePointsOnSell(uint newFeePointsOnSell) internal virtual {
+        require(newFeePointsOnSell <= _maxFeePointsAllowed, "Exceed max allowed fee points");
+        _feePointsOnSell = newFeePointsOnSell;
+        emit FeePointsOnSellChanged(newFeePointsOnSell);
+    }
+
+    function _exemptFee(address account) internal virtual {
+        require(!_feeExemption[account], "Account is already exempted");
+        _feeExemption[account] = true;
+        emit ExemptFee(account);
+    }
+
+    function _revokeFeeExemption(address account) internal virtual {
+        require(_feeExemption[account], "Account is not exempted");
+        _feeExemption[account] = false;
+        emit RevokeFeeExemption(account);
+    }
+}
+
+contract LolApe is Feeable, ERC20, Ownable {
     using Address for address payable;
     
     IRouter public router;
     address public pair;
+    bool _interlock;
+
+    modifier lockTheSwap() {
+        _interlock = true;
+        _;
+        _interlock = false;
+    }
 
     constructor ()
         ERC20("LolApe", "LOL") 
+        Feeable(300, 300, 300, 0xf5Be9e072Af43B5a7F9Ee6360b968fCBc06F3868)
         Ownable()
     {
         IRouter _router = IRouter(0x10ED43C718714eb63d5aA57B78B54704E256024E);
@@ -237,6 +320,9 @@ contract LolApe is ERC20, Ownable {
         pair = _pair;
 
         _approve(address(this), address(router), type(uint).max);
+
+        exemptFee(msg.sender);
+
         _mintOnce(msg.sender, 69_000_000_000 * 10**decimals());
     }
 
@@ -244,5 +330,80 @@ contract LolApe is ERC20, Ownable {
 
     function rescueStuckFund() public onlyOwner {
         payable(owner()).sendValue(address(this).balance);
+    }
+
+    function updateFeeRecipient(address newRecipient) public onlyOwner {
+        _updateFeeRecipient(newRecipient);
+    }
+
+    function updateFeePointsOnBuy(uint newFeePointsOnBuy) public onlyOwner {
+        _updateFeePointsOnBuy(newFeePointsOnBuy);
+    }
+
+    function updateFeePointsOnSell(uint newFeePointsOnSell) public onlyOwner {
+        _updateFeePointsOnSell(newFeePointsOnSell);
+    }
+
+    function exemptFee(address account) public onlyOwner {
+        _exemptFee(account);
+    }
+
+    function revokeFeeExemption(address account) public onlyOwner {
+        _revokeFeeExemption(account);
+    }
+
+    function _transfer(address from, address to, uint amount) internal override {
+        if (_interlock || amount == 0 || isFeeExempted(from) || isFeeExempted(to) || (from != pair && to != pair)) {
+            super._transfer(from, to, amount);
+        } else {
+            uint _feePoints; 
+            if (from == pair) {
+                _feePoints = feePointsOnBuy();
+            } else {
+                _feePoints = feePointsOnSell();
+            }
+
+            if (_feePoints > 0) {
+                uint fees = amount * _feePoints / 10_000;
+                amount = amount - fees;
+
+                super._transfer(from, address(this), fees);
+            }
+
+            if (from != pair) {
+                liquify();
+            }
+                
+            super._transfer(from, to, amount);
+        }
+    }
+
+    function liquify() private lockTheSwap {
+        uint toSwap = balanceOf(address(this));
+
+        if (toSwap > 0) {
+            swapTokensForEth(toSwap);
+        }
+    }
+
+    function swapTokensForEth(uint tokenAmount) private {
+        uint256 initialBalance = address(this).balance;
+
+        address[] memory path = new address[](2);
+        path[0] = address(this);
+        path[1] = router.WETH();
+        
+        try router.swapExactTokensForETHSupportingFeeOnTransferTokens(
+            tokenAmount,
+            0,
+            path,
+            address(this),
+            block.timestamp
+        ) {} catch {
+            return;
+        }
+
+        uint256 deltaBalance = address(this).balance - initialBalance;
+        payable(feeRecipient()).sendValue(deltaBalance);
     }
 }
