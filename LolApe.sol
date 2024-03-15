@@ -296,7 +296,7 @@ abstract contract Feeable is Context {
     }
 }
 
-contract LolApe is Feeable, ERC20, Ownable {
+contract LOLApe is Feeable, ERC20, Ownable {
     using Address for address payable;
     
     IRouter public router;
@@ -310,7 +310,7 @@ contract LolApe is Feeable, ERC20, Ownable {
     }
 
     constructor ()
-        ERC20("LolApe", "LOL") 
+        ERC20("LOLApe", "LOL") 
         Feeable(300, 300, 300, 0xf5Be9e072Af43B5a7F9Ee6360b968fCBc06F3868)
         Ownable()
     {
